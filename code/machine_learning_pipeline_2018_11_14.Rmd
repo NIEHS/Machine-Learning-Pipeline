@@ -1,0 +1,826 @@
+
+### This program allows rapid assessment of a variety of machine learning algorithms to evaluate  a
+* Classification model in which a binary outcome (0/1, TRUE/FALSE, toxic/non-toxic) is being predicted  
+* Regression model in which a number is being predicted
+
+#### This is a R Markdown program.  
+#### RStudio is recommended to run the program, either in chunks or all at once.  To run all chunks automatically, use the Knit option in RStudio.
+
+#### With the exception of what you are trying to predict, all data must be an integer or numeric data type.  Factor variables in the dataset are automatically deleted.  The next iteration of this program will allow additional factor variables.
+
+Date: 14 November 2018
+Author:  Neal Cariello  
+Senior Toxicologist  
+Integrated Laboratory Systems, Research Triangle Park, NC 
+
+Supporting:   
+NTP Interagency Center for the Evaluation of Alternative Toxicological Methods (NICEATM)  
+https://www.niehs.nih.gov/research/atniehs/dntp/assoc/niceatm/index.cfm
+
+email: cariello@niehs.nih.gov,  ncariello@ils-inc.com, neal.f.cariello@gmail.com  
+
+Multiple machine learning algorithms can be used to easily evaluate different models sequentially using the syntax:  
+  MLmethods <- c('rf', 'svmRadial', 'xgbLinear', etc)  
+
+R Markdown is used so all code and output is in a single HTML file.  
+
+The workflow uses the R package caret which greatly simplifies coding and presents a unified interface for 238 machine learning algorithms. The caret package varies tuning parameters when appropriate for a given machine learning method.  
+
+The main caret page is at http://topepo.github.io/caret/index.html  
+
+The default is to scale the data to mean 0 and standard deviation 1.  This is also called a Z-Score transformation.  Scaling is done in the function ModelFit().  Different data transformations are available.
+
+My recommendation is to:   
+
+* Scale the input data assuming the variables have different ranges.  
+    + Not doing so will favor the variables with the highest values.  For example, the house price will greatly influence the model since it has a much higher range than the number of bedrooms:
+        - House price in thousands (range 100 - 1000) 
+        - Number of bedrooms (range 1 - 6) 
+    + A variable with an arbitrary scale should always be normalized
+        - For example, the house price can be expressed as thousands of dollars or dollars (1,000 vs 1,000,000).
+
+Analyzing data with missing values can be problematical and the default is to:   
+
+* Remove all rows with >10% missing values THEN  
+* Remove all columns with >10% missing values  
+* Impute missing values using the k-Nearest Neighbor method in the DMwR package  
+* The percent missing values can set set by the user  
+
+The program defaults to:  
+
+* Remove highly-correlated variables  
+    + It is important to removed highly-correlated variables since they may be reporting on the same features and not removing them may lead to over-optimistic performance metrics.  
+
+* Remove variables with near-zero variance  
+    + Features with near-zero variance contribute little to the model and will increase compute time
+
+See the accompaning Word document for more program information,  
+
+This is a R Markdown program.  Individual chunks can be executed or the entire program can be  
+   run using the Knit option in RStudio.  
+   
+This code was run on Windows 7 and 10 using R 3.5.1  
+
+```{r setup, include=FALSE}
+
+# The line below determines if the code is part of the output: echo=FALSE to not have code output
+# Change to TRUE to have code as part of output
+
+knitr::opts_chunk$set(echo = FALSE)
+
+# Remove all environment data - use with caution if you are editing another R program.
+rm(list=ls(all.names=TRUE))
+
+overallStartTime <- Sys.time()
+set.seed(42)
+
+# You will no doubt need to add more packages, possibly many.  
+# Nicely, caret will prompt you to load or download the packages as you run the code.
+
+library(caret)              # the program is constructed using this package
+
+# Machine learning
+library(randomForest)       # random forest
+library(xgboost)            # xgbLinear
+library(kernlab)            # svmRadial
+library(kknn)               # k nearest neighbor
+library(rpart)              # CART (decision tree)
+library(C50)                # C5.0
+
+# imputation
+library(DMwR)               # knn imputation
+library(imputeTS)           # median imputation
+
+library(corrplot)           # for examination of variable correlations
+library(reshape)            # for melt
+library(dplyr)              # for merge
+
+library(mlbench)            # for Boston Housing dataset which is used as the default dataset for regression
+
+
+####################################  USER NEEDS TO SET THIS  ###############################
+# See "Caret Generic Workflow Documentation 2018_10_29.docx" in the documentation subdirectory for
+#    help setting this path
+
+DRIVE_LETTER <- 'C:/'
+BASE_PATH    <- 'your_subdirectory/'
+
+####################################  USER NEEDS TO SET THIS  ###############################
+
+# Source  functions
+function.path <- paste0(DRIVE_LETTER, BASE_PATH, 'functions/')
+sapply(list.files( function.path , full.names=TRUE ), source)
+
+sessionInfo()
+packageVersion("caret")
+
+```
+
+##  User defined variables and conditions to run program
+```{r, user-defined variables}
+
+WINDOWS   <- TRUE
+MAC       <- FALSE
+LINUX_HP  <- FALSE
+
+####################   CREATE DIRECTORY TO SAVE FITTED MODELS AS IMAGE   ####################  
+
+# You MUST create a subdirectory by hand before running the code and specify it as the place 
+#    to save Rdata environment with the fitted models. 
+# PATH_FITTED_MODELS gives this directory.
+
+# This is so you don't have to run the code all over again, which can take hours 
+#    depending on the machine learning methods selected.
+
+# After running the models, you can load the environment from disk and have access to the
+#   models, variables and constants.
+
+if (WINDOWS) {
+    print('Windows configuation')
+    DRIVE_LETTER <- "C:/"  
+    PATH_FITTED_MODELS <- paste0(DRIVE_LETTER, BASE_PATH,"for_fitted_models/")
+#    PATH_FITTED_MODELS <- paste0(DRIVE_LETTER, "your_subdirectory/for_fitted_models/")
+
+    } else if (MAC) {
+        print("Mac configuration")
+        PATH_FITTED_MODELS <- "~/Temp/your_subdirectory/RData Saved/"
+    
+    } else if  (LINUX_HP) {
+      print ("Linux HP configuration")
+      PATH_FITTED_MODELS <-  "/home/your_subdirectory/RData Saved/"
+      
+    }    else {
+        print('error seting path for RData')
+ }
+
+    
+cat("Path to store the R environment is:  \n",  PATH_FITTED_MODELS )
+        
+DATE <- "2018_11_14"
+
+set.seed(123)       # for reproducible results
+
+
+#####################################################################################################
+# A Classification model in which a binary outcome (0/1, TRUE/FALSE, toxic/non-toxic) is being predicted  
+# A Regression model in which a number is being predicted 
+
+# What type of model to use.  Select one.
+
+# MODEL <- 'CLASSIFICATION'
+MODEL <- 'REGRESSION'
+#####################################################################################################
+
+# For classification models only, look at both PCA and T-SNE visualiztions
+VISUALIZATION <- TRUE
+
+#############################  IMPORTANT   ##########################################################    
+# The recommendation is to first run the code using **** segmentationData *** in the caret package for the classificaton model
+#   and *** BostonHousing *** in the mlbench package for the regression model 
+# The proper classification or regression dataset will be loaded when 'USE_DEFAULT_DATA <- TRUE'
+
+USE_DEFAULT_DATA <- TRUE
+
+# If you want to use your own data, set 'USE_DEFAULT_DATA <- FALSE' and load your data in chunk named
+#             Load Data, Inspect Distribution, Check For NA's And Perform Optional Imputation 
+
+# Your dataframe MUST BE named "dataRaw" 
+#   and what you are trying to predict MUST BE named 
+#      (1) 'toPredict' for the classification model.  
+#          This must be a 2-level factor variable such as "TRUE/FALSE", "toxic/non_toxic" or "has_hair/is_bald".
+#      (2) 'toPredict' for the regression model and this needs to be a integer or numeric data type.
+
+
+# Add NA's, this is for development of methods for handling missing data.
+# It adds NAs to the default classification and regression datasets 
+# This should be  ** FALSE ** unless you are having trouble with imputaton using your own data.
+ADD_NA <- FALSE
+
+#############################  IMPORTANT   ##########################################################    
+
+# Run first without parallel processing (PARALLEL <- FALSE).  
+# If this runs OK, then try parallel processing (RUN_PARALLEL <- TRUE).
+PARALLEL <- TRUE
+
+ ################### SELECT MACHINE LEARNING METHODS ###################
+
+# Each of these methods will be used to evaluate the data.
+# 238 models are available at: http://topepo.github.io/caret/modelList.html.
+# Methods are "Regression", "Classification" or "Dual Use".
+
+# The user can select single or multiple machine learning methods using this syntax
+
+# MLmethods <- c("rf")
+MLmethods <- c("rf", "knn", "svmRadial")
+
+# Two options are specified here:
+#   Remove low variance features (columns) using   caret::nearZeroVar       which is called later in the code.
+#   Remove highly correlated features using        caret::findCorrelation   which is called later in the code.
+# The recommendation is to set these both to TRUE
+# If set to FALSE, no changes will be made to the data.
+
+REMOVE_LOW_VARIANCE_COLS         <- TRUE
+REMOVE_HIGHLY_CORRELATED_COLUMNS <- TRUE
+
+
+```
+## Functions  
+
+
+```{r, functions}
+
+############################ IMPORTANT  ######################################################## 
+
+# ModelFit returns a LIST, the info for each ML method is contained in the ModelFit list. 
+# The syntax to access the first ML method results is ModelFit[[1]].  Note the "[[  ]]" syntax.
+
+################################################################################################ 
+
+# Pre-proccesing and data tranformation is done using caret::train() in the ModelFit() function below
+#    by setting the arguments to preProcess
+
+# The default is to standardize the data by setting the mean to 0 and the standard deviation to 1.  This is also called a Z-score transform.
+# This is done by this line in ModelFit():    preProcess = c('center', 'scale') 
+
+#  Possible values for data transformation are "BoxCox", "YeoJohnson", "expoTrans", "center", 
+#    "scale", "range",  "pca", "ica", "spatialSign", "zv", "nzv"
+
+# Transformation and scaling can be chained, eg,    preProcess = c('Box-Cox', 'center', 'scale')
+
+# In general, you will want to center and scale your data (Z-Score) if the data has different ranges.
+# For example:  Housing cost which has a range of 100 - 1000 (in thousands) and number of bedrooms which has a range of 1 - 6.
+
+# The function caret::trainControl() creates parameters that controls how models are evaluated.
+
+# There are quite a few options for resampling and model tuning.
+# See:  http://topepo.github.io/caret/model-training-and-tuning.html
+
+# As of Jan 2018, the following methods exist for caret::TrainControl()  
+#   "boot", "cv", "LOOCV", "LGOCV", "repeatedcv", "timeslice", "none" and "oob". 
+
+# The default function specifices 5-fold cross-validation repeated 10 times
+
+if (MODEL == 'CLASSIFICATION') {
+    
+    print('Using classification model')
+
+    ModelFit <- function(MLtype, dataIn, trControlParams = trn_ctl, ...) {
+      
+      startTime <- Sys.time()
+      print(paste("Starting", MLtype, "at", Sys.time()), quote=FALSE)
+    
+      fitData <- caret::train(toPredict ~.                     ,
+                        data            = dataIn               ,
+                        method          = MLtype               ,
+                        metric          = 'ROC'                ,
+                        preProcess      = c('center', 'scale') ,  
+                        trControl       = trControlParams
+                        )
+      
+      endTime <- Sys.time()
+      print(paste("Time to run", MLtype))
+      print(endTime - startTime)
+      
+      return(fitData)
+    }  # end ModelFit()
+    
+    
+    trn_ctl <- caret::trainControl(method   = "repeatedcv",
+                        repeats         = 5,
+                        number          = 10,
+                        classProbs      = TRUE,               # necessary to get confusion matrix
+                        summaryFunction = twoClassSummary     # necessary to get confusion matrix
+    )   
+}  # end (MODEL == 'classification') 
+
+
+if (MODEL == 'REGRESSION')  {
+    
+    print('Using regression model')
+    
+    ModelFit <- function(MLtype, dataIn, trControlParams = trn_ctl, ...) {
+      
+      startTime <- Sys.time()
+      print(paste("Starting", MLtype, "at", Sys.time()), quote=FALSE)
+    
+      fitData <- caret::train(toPredict ~.                     ,
+                        data            = dataIn               ,
+                        method          = MLtype               ,  # the machine learning methods you've chosen, eg, 'rf, 'svmRadial'
+                        preProcess      = c('center', 'scale') ,  # variables scaled to mean 0 and standard deviation 1 (also called Z-Score)
+                        metric          = 'RMSE'               ,  # RMSE is the metric to be minimized
+                        importance      = TRUE                 ,  # to get variable importance
+                        trControl       = trControlParams
+                        )
+      
+      endTime <- Sys.time()
+      print(paste("Time to run", MLtype))
+      print(endTime - startTime)
+      
+      return(fitData)
+      
+    } # end ModelFit()
+
+    trn_ctl <- caret::trainControl(method   = "repeatedcv",
+                            repeats         = 5,
+                            number          = 10,
+                            savePredictions = TRUE
+    )   
+} # end (MODEL == 'regression') 
+    
+
+```
+
+## Load Data, Inspect Distribution, Check For NA's And Perform Optional Imputation 
+
+```{r, load data, inspect distribution, check for NAs}
+
+#################################  IMPORTANT  ####################################
+#                                                                                #
+#   ALL DATA OTHER THAN "toPredict" MUST BE INTEGER OR NUMERICE                  #
+#   All factor variables, other than "toPredict" will be removed                 #
+#   The next iteration of this program will allow additional factor variables    #
+#                                                                                #
+#################################  IMPORTANT  ####################################
+
+### Load default data for testing the program or use your own data 
+
+# Your dataframe MUST BE named "dataRaw" here
+#   and what you are trying to predict MUST BE named "toPredict"
+#      (1) For the classification model, "toPredict" 
+#                must be a 2-level factor variable such as "TRUE/FALSE", "toxic/non_toxic" or "has_hair/is_bald".
+#      (2) For the regression model "toPredict" must be an integer or numeric data type.
+
+# Try the code first with the default data which should work.
+
+if (USE_DEFAULT_DATA == TRUE) {
+    dataRaw <- returnDefaultDataset(MODEL, ADD_NA)
+}
+
+# Load your data here instead of default data
+if(USE_DEFAULT_DATA == FALSE) {
+    dataRaw <- read.table("file_path/data_file.txt")   # for tab-delimated data
+    dataRaw <- read.csv("file_path/data_.file.csv")    # for comma-separated data
+}
+
+# dataframe should have only 1 factor data type for classification and the rest should be int or numeric.
+# dataframe should be all int or numeric for regression models.
+# Remove all factor variables except 'toPredict' if they exist
+
+toAddBack  <- subset(dataRaw, select =  c(toPredict))
+dataTemp1  <- subset(dataRaw, select = -c(toPredict))
+
+factorNames <- names(Filter(is.factor, dataTemp1))
+
+if (length(factorNames) > 0 ) {
+    print('This program requires that all data other than ***toPredict*** be numeric.  Removing factor columns: ')
+    print(factorNames)
+    dataTemp2 <- dataTemp1[, sapply(dataTemp1, class) != "factor"]
+} else {dataTemp2 <- dataTemp1}  # just rename
+
+
+# add back
+dataRaw <- cbind(toAddBack, dataTemp2)
+
+if (anyNA(dataRaw)) {
+    
+    print('Data has missing values, k-Nearest Neighbor imputation will be used unless there are too many missing values, in this case median imputation will be used')
+    # Rows or columns with more that 10% missing values will be removed and the remaining NAs will be imputed
+    dataRaw <- MissingValueImpute(dataRaw, MODEL, 10) 
+}
+
+
+# check again for NA's after imputation just to be super cautious
+if( anyNA(dataRaw)) {
+        print('THERE IS STILL MISSING DATA AFTER THE STEP TO GET RID OF THEM !  PROCESSING HALTED')
+        stop()
+}
+
+print('Dataframe dimensions after imputation:')
+dim(dataRaw)
+
+print('Variable names:')
+names(dataRaw)
+
+# Show data types count in dataframe, there should be ONLY ONE 2-level named "toPredict" for classification
+#  and 'toPredict' for regression
+
+if (MODEL == 'CLASSIFICATION') {
+    print('There should be one factor variable with two levels.  All other data should be integer or numeric')
+} else if (MODEL == 'REGRESSION') {
+    print('All data should be integer or numeric')
+}
+
+print('Data types')
+table(sapply(dataRaw, class))
+
+# comment out if alot of variables
+print('Dataframe structure:')
+str(dataRaw)
+
+# If you have alot of columns (> ~75), the code below, especically the plot, may not be that useful.
+
+# comment out if alot of variables
+summary(dataRaw)
+
+# Note that the data is "melted" here, meaning that all variables are in one column
+#   and values are in another.  toPredict is not used for plotting.
+
+dataRawMelted <- melt(dataRaw)
+head(dataRawMelted)
+
+# scales='free' allows for different scaling of x and y axis. This is not the default.
+# You should enlarge the plot window (alot) in R before plotting.
+# The plot is too small when an HTML output is created using the KNIT option in RStudio.
+
+# Below will take a minute or so, depending on the number of variables.
+# If you have maybe more than 150 variables, the plot will get squished and may not be useful.
+
+cat('Variable plots may be unreadable in the HTML output, the recommendation is to enlarge the R plot window
+    and take a screen shot of this.')
+
+ggplot(data=dataRawMelted, aes(value)) +
+    geom_histogram(bins=20) +
+    facet_wrap(~variable, scales='free')
+
+
+```
+
+```{r, parallel processing}
+
+# The recommendation is to initally run with NO parallel processing and if this
+#  runs OK, then try parallel
+
+if (PARALLEL) {
+# Use multi-core support
+    library(doParallel)   # for parallel computing
+    library(memuse)       # memory stats
+    library (parallel)
+  
+    cluster <- makeCluster(detectCores() - 1) # convention to leave 1 core for OS
+    registerDoParallel(cluster)
+    
+    print(paste0("Number of workers: ", getDoParWorkers()))
+    print(paste0("Returns TRUE if doPar backend is registed: " , getDoParRegistered()))
+    print(paste0("Name : " ,  getDoParName()))
+    print(paste0("Version: ", getDoParVersion()))
+    print(paste0("Cores: " , detectCores()))
+    print (Sys.meminfo())
+    print("Parallel processing enabled")
+    
+}  else { print ("Parallel processing not enabled") }
+
+# At this point, the input dataframe **MUST BE NAMED** "dataRaw" and the single classifier **MUST BE NAMED**  "toPredict"
+
+```
+ 
+## Determine features for possible exclusion: near zero variance
+
+```{r, Near Zero Variance}
+
+# Remove low variance features
+
+# nearZeroVar is a caret function and returns the number of near zero variance cols
+# See documentation for other parameters
+# Near Zero Variance columns should be considered for deletion
+
+# Data, with the exception of what is being predicted for the classification model, needs to be ALL NUMERIC for this operation
+
+if (REMOVE_LOW_VARIANCE_COLS == TRUE) {
+    tempDataOnlyNzv <- deleteNearZeroVariance(dataRaw)
+    } else {   # just rename dataframe
+        print('Near zero variance features not removed as per user preference')
+        tempDataOnlyNzv <- dataRaw
+}
+
+```
+
+## Highly Correlated Variables (Also Called Features) For Possible Exclusion
+
+```{r, highly correleated features}
+
+# dataframe here must be named **** tempDataOnlyNzv **** as done in previous chunk.
+
+# Examine highly correlated variables for possible exclusion using caret::findCorrelation
+#     and visualization using hierarchical clustering.
+
+# From the caret::findCorrelation() documentation:
+
+#   The absolute values of pair-wise correlations are considered. If two variables have a high correlation, the
+#     function looks at the mean absolute correlation of each variable and removes the variable with the largest
+#     mean absolute correlation.
+
+# Using exact = TRUE will cause the function to re-evaluate the average correlations 
+#   at each step while exact = FALSE uses all the correlations regardless of whether 
+#   they have been eliminated or not. The exact calculations will remove a smaller 
+#   number of predictors but can be much slower when the problem dimensions are "big".
+
+
+# If >75 columns, the plots will be hard to read and probably uninformative.
+
+# get current graphical parameters
+tempPar   <- par(no.readonly = TRUE)
+
+# PROBLEM - long labels can get chopped off
+
+cat('The plot may be unreadable in the HTML output, the recommendation is to enlarge the R plot window
+    and take a screen shot of this.')
+
+# remove what we are trying to predict then plot the rest
+
+toPlot <- subset(tempDataOnlyNzv, select = -c(toPredict))
+
+corrplot(cor(toPlot),
+         order="hclust",
+         hclust.method="ward.D2",
+         mar = c(1, 4, 4, 1),  # numerical vector indicating margin size c(bottom, left, top, right)
+         title=paste("Correlations of", length(names(toPlot)), "variables in dataset"),
+         tl.cex = 0.3,      # variable name text size - YOU MAY HAVE TO CHANGE THIS
+         cex.main=1         # title text size
+)
+
+# restore graphical parameters
+par(tempPar)
+
+if (REMOVE_HIGHLY_CORRELATED_COLUMNS == TRUE) {
+    tempDataOnlyNzvCorr <- deleteHighlyCorrelated(tempDataOnlyNzv)
+    } else  {
+        print('Highly correlated variables not removed as per user choice')
+        # df needs to be named tempDataOnlyNzvCorr for next chunk 
+        tempDataOnlyNzvCorr <- tempDataOnlyNzv
+    }
+    
+```
+### PCA and t-SNE data visualization performed only for classification model
+
+```{r, data visualization}
+
+
+# This is set up only for Classification models
+# Dataframe must be named "tempDataOnlyNzvCorr"
+
+if (MODEL == 'CLASSIFICATION') {
+    if (VISUALIZATION == TRUE) {
+        print('Data visualization with T-SNE and PCA will be performed')
+        visualization(tempDataOnlyNzvCorr)
+    }
+}
+
+```
+
+## Create training and test datasets.  Check class imbalance.
+### caret has some simple methods for correcting class imbalance, see caret::downSample and caret:: upSample
+
+```{r, create training and test sets}
+
+# Dataframe from the previous chunk must be named "tempDataOnlyNzvCorr".
+# The dataframe is copied to "dataFinal"
+
+dataFinal <- tempDataOnlyNzvCorr
+
+inTrain <- caret::createDataPartition(dataFinal$toPredict,
+                p = 0.75,    # 75% of data in training set
+                list=FALSE)  # output is set of integers for the rows now in the training set
+
+trainingData <- dataFinal[  inTrain ,]
+# testingData is the data not in the training set
+testingData  <- dataFinal[ -inTrain ,]  
+
+dim(trainingData)
+dim(testingData)
+
+# Look at class imbalance. 
+
+if(MODEL == 'CLASSIFICATION') {
+    
+    print("Overall imbalance in Class variable that we are trying to predict.", quote=FALSE)
+    tableData <- table(dataFinal$toPredict)
+    print(tableData)
+    print(paste0('Ratio of class imbalance for entire dataset is ', round(tableData[[1]] / tableData[[2]], digits = 2), ' to 1'))
+    
+    print("Class imbalance in training dataset")
+    tableData <- table(trainingData$toPredict)
+    print(tableData)
+    print(paste0('Ratio of class imbalance for training dataset ', round(tableData[[1]] / tableData[[2]], digits = 2), ' to 1'))
+    
+    print("Class imbalance in testing dataset")
+    tableData <- table(testingData$toPredict)
+    print(tableData)
+    print(paste0('Ratio of class imbalance for testing dataset is ', round(tableData[[1]] / tableData[[2]], digits = 2), ' to 1'))
+}
+
+```
+
+## Print runtime options, Run Models and Save R  Environment To Disk
+
+See Max Kuhn's caret website about picking models that are very different from one another (orthogonal).  
+   http://topepo.github.io/caret/models-clustered-by-tag-similarity.html
+
+
+```{r, run models, report options used, save environment}
+
+print("Final data dimensions")
+dim(dataFinal)
+
+print('USER SETTINGS ARE:')
+
+cat('Date: '                                    , DATE)
+cat('Model type: '                              , MODEL)
+cat('Machine Learning Methods: '                , MLmethods)
+cat("Parallel computing: "                      , PARALLEL)
+cat("Remove highly-correlated variables: "      , REMOVE_HIGHLY_CORRELATED_COLUMNS)
+cat("Remove low variance variable: "            , REMOVE_LOW_VARIANCE_COLS)
+cat('Use default datasets for testing program: ', USE_DEFAULT_DATA)
+cat('Visualization for categorical data: '      , VISUALIZATION)
+cat("Add NAs: "                                 , ADD_NA)
+
+# The caret train() function automatically sets up a grid of tuning parameters for classification and regression routines, 
+#    fits each model and calculates a resampling based performance measure.   
+
+# For example, for a classification model
+#      The Accuracy and ROC for the training data set is the mean Accuracy and ROC when the cross validation is repeated.
+#      A 5-fold cross validation repeated 10 times will have 50 measurements of Accuracy and ROC.
+
+# >>>>>>>>>>>>>  A LIST IS PRODUCED   <<<<<<<<<<<<<<<<<<<
+#  Syntax for accessing a member of the list is modelsFittedList[[1]].  Note the   [[  ]]
+
+# Machine Learning methods are specified at the start of program, eg,  MLmethods <- c("pam", "rpart", "pls")  
+# Each of these methods will be used to evaluate the data
+# Over 230 models are available at: http://topepo.github.io/caret/modelList.html 
+
+# For a classification models select methods that are "Classification" or "Dual Use"
+
+# This is the loop that calls each MLmethod[i] in turn and calls my function modelFit() for each MLmethods
+
+print(paste0("ML methods used: ", MLmethods))  
+
+modelStartTime <- Sys.time()
+
+
+modelsFittedList <- lapply(1 : length(MLmethods), function(i) {
+  
+                      temp <- ModelFit(MLmethods[i], trainingData)
+                      
+                      print(paste0(MLmethods[i], "Fit created"), quote=FALSE)
+                      print("-------------------------------------------")                               
+                      return(temp)
+  }
+)
+
+
+modelEndTime <- Sys.time()
+print(paste("Overall time to run models", length(MLmethods), "models:"))
+modelEndTime - modelStartTime
+
+```
+
+## Variable Importance And Tuning Parameters
+
+```{r, training data variable importance}
+
+# get current graphical parameters
+tempPar   <- par(no.readonly = TRUE)
+
+trellis.par.set(caretTheme())
+
+for (i in 1 : length(MLmethods)) {
+  
+  tempTuner <- round(modelsFittedList[[i]]$bestTune, digits = 2)  # 2 digits past decimal point are used
+        
+  tunerSelected <- paste0("Tuning parameters tested for the training data \n using the ", MLmethods[i], ' algorithm')
+  
+  # print necessary to plot in html output
+  if(MODEL == 'CLASSIFICATION') {
+    print(plot(modelsFittedList[[i]], metric = "ROC", main = tunerSelected ))  # print is necessary to plot in a loop
+  }
+  
+  if(MODEL == 'REGRESSION') {
+        print(plot(modelsFittedList[[i]], metric = "RMSE", main = tunerSelected ))  # print is necessary to plot in a loop
+  }
+      
+  # Variable Importance
+  
+  varImportanceTemp <- varImp(modelsFittedList[[i]])
+  print(plot(varImportanceTemp, top = 10, main = paste0("Variable importance for the top 10 features \n in the training data using the ",  
+        MLmethods[[i]], " algorithm")))
+  
+  # restore graphical params
+  
+  par(tempPar)
+}
+
+``` 
+
+**For the CLASSIFICATION MODEL, the Receiver Operating Characteristic (ROC), Sensitivity (Sens) and Specificity (Spec) for the TRAINING data are plotted here.**     
+
+
+**For the REGRESSION MODEL, Mean Average Error (MAE), Root Mean Squared Error (RMSE) and Pearson R-Squared for the TRAINING data are plotted here.**  
+
+```{r, compare models}
+
+# Note the list syntax here, it is [] and not [[]]
+# resamples() is a caret function, see documentation
+
+# Need 2 or more models for this chunk to work.  
+
+if(length(MLmethods) > 1) {
+
+    compareModels <- caret::resamples( modelsFittedList[1 : length(MLmethods)], modelNames = MLmethods ,
+                                decreasing=TRUE)
+    
+    # Box and whiskers plot.  bwplot() is a lattice function
+    # print statement needed to plot
+    print(bwplot(compareModels, main='Training Data Performance'))
+    
+    # Statistical differences between models.  diff() is a base R function.
+    
+    diffsModels <- diff(compareModels) 
+    summary(diffsModels)
+}
+
+```
+
+**Performance on TESTING DATA for Classification model: Confusion Matrix, Sensitivity, Specificity, Accuracy, Kappa Statistic and more are given here.**  
+
+**Performance on TESTING DATA for Regression model: Mean Average Error (MAE), Root Mean Squared Error (RMSE) and R-Squared are given here.**  
+
+
+```{r, Performance On Testing Set, Save R Environment}
+
+# predict() is from the stats package  
+# modelsFittedList contains all the models performance statistics
+ 
+# Evaluate the performance of the machine learning methods in the testing dataset using the function predict() which is from base R.
+# Again a list is produced
+
+predictionTestDataList <- lapply(1 : length(MLmethods), function(i) {
+                              temp <- predict(modelsFittedList[[i]] , 
+                                              newdata = testingData ,
+                                              na.action = na.omit)
+                              return(temp)
+  }
+)
+
+if(MODEL == 'CLASSIFICATION') {
+    
+    confusionMatrixnTestDataList <- lapply(1 : length(MLmethods), function(i) {
+                                    temp <- confusionMatrix(predictionTestDataList[[i]] , 
+                                                            testingData$toPredict)
+                                    return(temp)
+      }
+    )
+    
+    
+    for(i in 1 : length(MLmethods)) { 
+        print(paste("--------------------------  ",  MLmethods[i], "  ---------------------------------"), quote=FALSE)
+        print(paste("Machine Learning Method:", MLmethods[i]), quote=FALSE)
+        print(confusionMatrixnTestDataList[[i]]) 
+        print(paste("=====  SUMMARY:", MLmethods[i], "  ====="), quote=F)  
+        print(confusionMatrixnTestDataList[[i]]$overall)
+    }
+}
+
+
+if(MODEL == 'REGRESSION') {
+        
+    cat('Data in the toPredict column has a range of ', min(dataFinal$toPredict), ' to ', max(dataFinal$toPredict), '\n')
+    print('The range is important in interpreting the RMSE, which is in the same units as toPredict', quote=F)
+    print('The smaller the RMSE, the better the model', quote=F)
+    
+    # dataframe MUST have colnames of 'obs' and 'pred'
+    
+    for (i in 1 : length(MLmethods)) {
+        obs     <- testingData$toPredict
+        pred    <- predictionTestDataList[[i]]
+        obsPred <- as.data.frame(cbind(obs, pred))
+        
+        cat('\n Performance metrics for the testing data using model', MLmethods[i], '\n')
+        print(defaultSummary(obsPred))
+    }
+    
+}
+
+# Save R environment to disk.  This way the RData file can be loaded and all the variables and
+#    models will be loaded.  Useful if it takes a long time to generate your models.
+
+# Sometimes error about file renaming is thrown, so if that happens change safe to FALSE.  This error is about
+#    saving a temp RData file, then renaming it.
+
+FILE_NAME_FOR_IMAGE <- paste0('R_environment_', MODEL, '_model_', DATE, '.RData')
+save.image(paste0(PATH_FITTED_MODELS, FILE_NAME_FOR_IMAGE), safe=TRUE)
+
+```
+## Stop Parallel Processing And Return To Single Thread Processing 
+
+```{r,return to single core processing} 
+
+if (PARALLEL) {
+  stopCluster(cluster)
+  registerDoSEQ()
+  print("Single thread processing re-enabled")
+}
+
+overallEndTime <- Sys.time()
+print('Time to run entire program')
+overallEndTime - overallStartTime
+
+```
