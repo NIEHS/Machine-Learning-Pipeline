@@ -4,8 +4,10 @@
 
 This R program allows rapid assessment of a variety of machine learning algorithms for classification and regression predictions.     
 
-Author: Neal Cariello, Senior Toxicologist at Integrated Laboratory Systems (https://ils-inc.com/)    
+Author: Neal Cariello, Senior Toxicologist at Integrated Laboratory Systems (https://ils-inc.com/)  
+
 Supporting the NTP Interagency Center for the Evaluation of Alternative Toxicological Methods (NICEATM) (https://www.niehs.nih.gov/research/atniehs/dntp/assoc/niceatm/index.cfmv)    
+
 NICEATM is an office within the division of the National Toxicology Program at the National Institute of Environmental Health Sciences (https://www.niehs.nih.gov/index.cfm)
 
 EMAIL: cariello@niehs.nih.gov
